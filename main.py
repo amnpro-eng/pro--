@@ -3,6 +3,7 @@ import re
 import io
 import zipfile
 import tldextract
+import asyncio # ضفناه مشان delete
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.error import BadRequest, Forbidden
@@ -39,9 +40,9 @@ def get_kb(type="main"):
             [InlineKeyboardButton("🎯 الرؤية", callback_data='goals')],
             [InlineKeyboardButton("🎓 دورات أمنPRO", callback_data='courses_menu')],
             [InlineKeyboardButton("🔍 فحص الروابط", callback_data='check')],
-            [InlineKeyboardButton("🕵️ فحص ملف", callback_data='scan_file')], # زر جديد
+            [InlineKeyboardButton("🕵️ فحص ملف", callback_data='scan_file')],
             [InlineKeyboardButton("📜 الشهادات", callback_data='cert')],
-            [InlineKeyboardButton("🆘 الدعم الفني", callback_data='help')] # الاسم المعدل
+            [InlineKeyboardButton("🆘 الدعم الفني", callback_data='help')]
         ])
     if type == "back":
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ العودة للرئيسية", callback_data='menu')]])
@@ -80,7 +81,7 @@ def analyze_link(url):
 
     if threats:
         result = "❌ **غير آمن**"
-        description = "تم رصد مؤشرات تدل على أن الرابط قد يكون ضارًا أو يستخدم في التصيد الاحتيالي أو سرقة البيانات.\nننصح بعدم فتح الرابط أو إدخال أي معلومات شخصية داخله حفاظًا على أمنك الرقمي."
+        description = "تم رصد مؤشرات تدل على أن الرابط قد يكون ضارًا أو يستخدم في التصيد الاحتيالي أو سرقة البيانات.\nنصح بعدم فتح الرابط أو إدخال أي معلومات شخصية داخله حفاظًا على أمنك الرقمي."
     else:
         result = "✅ **آمن**"
         description = "لم يتم رصد أي مؤشرات خطورة معروفة أثناء الفحص.\nملاحظة: يبقى الالتزام بالحذر وعدم مشاركة بياناتك الشخصية أو كلمات المرور في أي موقع غير موثوق."
@@ -212,7 +213,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("back")
         )
     elif data == 'check':
-        CHECK_MODE[user_id] = 'link' # صار 'link' بدل True مشان نفرق بين فحص الرابط والملف
+        CHECK_MODE[user_id] = 'link'
         await query.edit_message_text(
             "🔍 **فحص الروابط**\n\n"
             "أرسل الرابط الذي تريد فحصه، وسيقوم النظام بتحليله وإعلامك بالنتيجة.\n\n"
@@ -220,7 +221,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
-    elif data == 'scan_file': # زر جديد
+    elif data == 'scan_file':
         CHECK_MODE[user_id] = 'file'
         await query.edit_message_text(
             "🕵️ **فحص ملف جنائي**\n\n"
@@ -295,7 +296,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
         return
-    if text == "🕵️ فحص ملف": # زر جديد
+    if text == "🕵️ فحص ملف":
         CHECK_MODE[user_id] = 'file'
         await update.message.reply_text(
             "🕵️ **فحص ملف جنائي**\n\nارسل اي ملف PDF, APK, ZIP, EXE...",
@@ -322,7 +323,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.MARKDOWN
     )
 
-# ----------------- معالج فحص الملفات الجديد - إضافة فقط -----------------
+# ----------------- معالج فحص الملفات الجديد - تم تصليح الخطأ هون -----------------
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if CHECK_MODE.get(user_id)!= 'file': return
@@ -330,7 +331,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
         await update.message.reply_text(f"❌ حجم الملف كبير {doc.file_size/1024/1024:.1f}MB. الحد 25MB", reply_markup=get_kb("back"))
-        CHECK_MODE.pop(user_id)
+        CHECK_MODE.pop(user_id, None) # حطيت None مشان ما يكرش
         return
 
     msg = await update.message.reply_text("⏳ جاري التحليل الجنائي للملف...")
@@ -368,13 +369,21 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         threats.append("⚠️ ملف تنفيذي Windows. لا تفتحه الا اذا كنت متأكد 100%.")
 
     result = "❌ **خطير - لا تفتح الملف**" if len(threats) > 1 else "✅ **آمن مبدئياً**"
-    await msg.edit_text(f"{result}\n\n" + "\n".join(threats), reply_markup=get_kb("back"))
-    CHECK_MODE.pop(user_id)
+    final_text = f"{result}\n\n" + "\n".join(threats)
+
+    # --- التعديل المهم هون: مسح + ارسال جديد بدل edit ---
+    try:
+        await msg.delete()
+    except:
+        pass
+    await update.message.reply_text(final_text, reply_markup=get_kb("back"), parse_mode=ParseMode.MARKDOWN)
+
+    CHECK_MODE.pop(user_id, None) # حطيت None مشان ما يكرش
 
 # ----------------- تشغيل البوت -----------------
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
-app.add_handler(MessageHandler(filters.Document.ALL, handle_file)) # سطر جديد فقط
+app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 app.run_polling(drop_pending_updates=True)
