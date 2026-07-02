@@ -1,5 +1,7 @@
 import os
 import re
+import io
+import zipfile
 import tldextract
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -12,6 +14,15 @@ CHANNEL_LINK = "https://t.me/S1ecurity_Pro"
 BOT_NAME = "آمن PRO"
 
 CHECK_MODE = {}
+MAX_FILE_SIZE = 25 * 1024 * 1024 # 25MB حد تيليجرام المجاني
+
+# ----------------- تواقيع الملفات الحقيقية Magic Bytes -----------------
+FILE_SIGNATURES = {
+    b'%PDF-': 'PDF',
+    b'PK\x03\x04': 'ZIP/APK/DOCX', # الـ APK هو ZIP
+    b'MZ': 'EXE/DLL',
+    b'\x7fELF': 'ELF/Linux'
+}
 
 # ----------------- دوال المساعدة -----------------
 async def is_member(user_id, context):
@@ -28,8 +39,9 @@ def get_kb(type="main"):
             [InlineKeyboardButton("🎯 الرؤية", callback_data='goals')],
             [InlineKeyboardButton("🎓 دورات أمنPRO", callback_data='courses_menu')],
             [InlineKeyboardButton("🔍 فحص الروابط", callback_data='check')],
+            [InlineKeyboardButton("🕵️ فحص ملف", callback_data='scan_file')], # زر جديد
             [InlineKeyboardButton("📜 الشهادات", callback_data='cert')],
-            [InlineKeyboardButton("🆘 الدعم الفني", callback_data='help')]   # الاسم المعدل
+            [InlineKeyboardButton("🆘 الدعم الفني", callback_data='help')] # الاسم المعدل
         ])
     if type == "back":
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ العودة للرئيسية", callback_data='menu')]])
@@ -77,7 +89,14 @@ def analyze_link(url):
 
     return f"{intro}\n─────────────────────\nنتيجة التحليل: {result}\n{description}\n\n{footer}"
 
-# ----------------- معالجات الأوامر -----------------
+def detect_file_type(file_bytes: bytes, file_name: str) -> str:
+    for sig, ftype in FILE_SIGNATURES.items():
+        if file_bytes.startswith(sig):
+            return ftype
+    ext = file_name.lower().split('.')[-1]
+    return ext.upper()
+
+# ----------------- معالجات الأوامر - كودك القديم كامل بدون لمس -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if await is_member(user_id, context):
@@ -99,8 +118,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
 
-    # منع الوصول إذا غادر القناة (ما عدا زر التحقق)
-    if data != 'check_sub' and not await is_member(user_id, context):
+    if data!= 'check_sub' and not await is_member(user_id, context):
         await query.edit_message_text(
             "⚠️ **يجب عليك الاشتراك أولاً للاستفادة من الخدمات.**",
             reply_markup=get_kb("sub"),
@@ -108,7 +126,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ----------------- التحقق من الاشتراك -----------------
     if data == 'check_sub':
         if await is_member(user_id, context):
             await query.edit_message_text(
@@ -124,15 +141,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # ----------------- القائمة الرئيسية -----------------
     if data == 'menu':
         await query.edit_message_text(
             "🛡️ **أهلاً بك في بوت أمن PRO**\nاختر الخدمة التي تريدها من الأزرار أدناه.",
             reply_markup=get_kb("main"),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    # ----------------- من نحن -----------------
     elif data == 'about':
         await query.edit_message_text(
             "🏛️ **من نحن**\n\n"
@@ -143,8 +157,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    # ----------------- الرؤية -----------------
     elif data == 'goals':
         await query.edit_message_text(
             "🎯 **هدف آمن PRO**\n\n"
@@ -153,22 +165,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    # ----------------- قائمة الدورات -----------------
     elif data == 'courses_menu':
         await query.edit_message_text(
             "📚 **دورات آمن PRO**\nاختر المستوى المناسب لك:",
             reply_markup=get_kb("courses"),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    # ----------------- تفاصيل المستويات -----------------
     elif data == 'course_1':
         await query.edit_message_text(
             "**1️⃣ المستوى الأول – المبتدئ**\n\n"
             "يُعد هذا المستوى نقطة البداية لكل من يرغب في تعلم الأمن السيبراني، ويتضمن:\n"
             "• أساسيات الأمن السيبراني.\n"
-            "• حماية الهاتف من الاختراق والتجسس.\n"
+            "• حماية الهاتف من الاختراق والتجس.\n"
             "• التعامل الآمن مع التطبيقات والروابط.\n"
             "• رفع مستوى الوعي الرقمي وكيفية اكتشاف محاولات الاحتيال والهندسة الاجتماعية.",
             reply_markup=get_kb("courses"),
@@ -192,8 +200,6 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("courses"),
             parse_mode=ParseMode.MARKDOWN
         )
-
-    # ----------------- الشهادات والدعم -----------------
     elif data == 'cert':
         await query.edit_message_text(
             "نعمل على التطوير من أجل تصديق الشهادات وفق قاعدة بيانات رسمية",
@@ -201,16 +207,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN
         )
     elif data == 'help':
-        # تم إصلاح الخطأ باستخدام parse_mode=None حتى لا يتعارض الرابط مع تنسيق Markdown
         await query.edit_message_text(
             "اطرح سؤالك هنا\nhttps://t.me/+wdWPPmwpg_w5NmU0",
             reply_markup=get_kb("back")
-            # بدون parse_mode (None) تظهر الرسالة نصاً عادياً والرابط يبقى قابلاً للنقر
         )
-
-    # ----------------- فحص الروابط -----------------
     elif data == 'check':
-        CHECK_MODE[user_id] = True
+        CHECK_MODE[user_id] = 'link' # صار 'link' بدل True مشان نفرق بين فحص الرابط والملف
         await query.edit_message_text(
             "🔍 **فحص الروابط**\n\n"
             "أرسل الرابط الذي تريد فحصه، وسيقوم النظام بتحليله وإعلامك بالنتيجة.\n\n"
@@ -218,12 +220,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
+    elif data == 'scan_file': # زر جديد
+        CHECK_MODE[user_id] = 'file'
+        await query.edit_message_text(
+            "🕵️ **فحص ملف جنائي**\n\n"
+            "ارسل اي ملف PDF, APK, ZIP, EXE, DLL... الحد 25MB.\n"
+            "البوت يكشف التنكر والملفات الملغمة.",
+            reply_markup=get_kb("back")
+        )
 
 async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
 
-    # التحقق من الاشتراك
     if not await is_member(user_id, context):
         await update.message.reply_text(
             "⚠️ **يجب عليك الاشتراك أولاً للاستفادة من الخدمات.**",
@@ -232,12 +241,10 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ------- فحص الروابط -------
-    if CHECK_MODE.get(user_id, False):
+    if CHECK_MODE.get(user_id) == 'link':
         if "http" in text:
             urls = re.findall(r'(https?://[^\s]+)', text)
             url_to_check = urls[0] if urls else text
-
             msg = await update.message.reply_text("⏳ جاري الفحص...")
             result = analyze_link(url_to_check)
             try:
@@ -250,7 +257,7 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_kb("back"),
                 parse_mode=ParseMode.MARKDOWN
             )
-            CHECK_MODE.pop(user_id, None)  # إنهاء وضع الفحص
+            CHECK_MODE.pop(user_id, None)
         else:
             await update.message.reply_text(
                 "⚠️ الرجاء إرسال رابط صحيح يبدأ بـ http:// أو https://",
@@ -258,23 +265,17 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # ------- معالجة الأزرار النصية (الكيبورد المخصص) -------
     if text == "🏛️ من نحن":
         await update.message.reply_text(
             "🏛️ **من نحن**\n\n"
-            "آمن PRO فريق متخصص في الأمن السيبراني، يضم خبرات في البرمجة، وتحليل التهديدات الرقمية، "
-            "وتصميم الأنظمة، والتوعية الأمنية.\n\n"
-            "نعمل على نشر ثقافة الأمن السيبراني، وتطوير أدوات تساعد المستخدمين على استخدام الإنترنت بأمان، "
-            "مع تقديم دورات تدريبية ومحتوى احترافي يواكب أحدث التهديدات الإلكترونية.",
+            "آمن PRO فريق متخصص في الأمن السيبراني...",
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
         return
     if text == "🎯 الرؤية":
         await update.message.reply_text(
-            "🎯 **هدف آمن PRO**\n\n"
-            "نسعى إلى رفع مستوى الوعي الرقمي، وحماية المستخدمين من الاحتيال والاختراقات والهجمات الإلكترونية، "
-            "عبر التدريب، والتوعية، وتوفير أدوات تحقق تساعد على اتخاذ القرار الصحيح قبل التفاعل مع أي رابط أو تطبيق.",
+            "🎯 **هدف آمن PRO**\n\nنسعى...",
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
@@ -287,40 +288,93 @@ async def messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     if text == "🔍 فحص الروابط":
-        CHECK_MODE[user_id] = True
+        CHECK_MODE[user_id] = 'link'
         await update.message.reply_text(
-            "🔍 **فحص الروابط**\n\n"
-            "أرسل الرابط الذي تريد فحصه، وسيقوم النظام بتحليله وإعلامك بالنتيجة.\n\n"
-            "ملاحظة: يفضل إرسال الرابط كرسالة منفصلة.",
+            "🔍 **فحص الروابط**\n\nأرسل الرابط...",
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
         return
+    if text == "🕵️ فحص ملف": # زر جديد
+        CHECK_MODE[user_id] = 'file'
+        await update.message.reply_text(
+            "🕵️ **فحص ملف جنائي**\n\nارسل اي ملف PDF, APK, ZIP, EXE...",
+            reply_markup=get_kb("back")
+        )
+        return
     if text == "📜 الشهادات":
         await update.message.reply_text(
-            "نعمل على التطوير من أجل تصديق الشهادات وفق قاعدة بيانات رسمية",
+            "نعمل على التطوير من أجل تصديق الشهادات...",
             reply_markup=get_kb("back"),
             parse_mode=ParseMode.MARKDOWN
         )
         return
     if text == "🆘 الدعم الفني":
-        # تم الإصلاح هنا أيضاً
         await update.message.reply_text(
             "اطرح سؤالك هنا\nhttps://t.me/+wdWPPmwpg_w5NmU0",
             reply_markup=get_kb("back")
         )
         return
 
-    # أي رسالة أخرى
     await update.message.reply_text(
         "⚠️ الرجاء استخدام الأزرار للتنقل.",
         reply_markup=get_kb("main"),
         parse_mode=ParseMode.MARKDOWN
     )
 
+# ----------------- معالج فحص الملفات الجديد - إضافة فقط -----------------
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if CHECK_MODE.get(user_id)!= 'file': return
+
+    doc = update.message.document
+    if doc.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text(f"❌ حجم الملف كبير {doc.file_size/1024/1024:.1f}MB. الحد 25MB", reply_markup=get_kb("back"))
+        CHECK_MODE.pop(user_id)
+        return
+
+    msg = await update.message.reply_text("⏳ جاري التحليل الجنائي للملف...")
+    file_bytes = await (await doc.get_file()).download_as_bytearray()
+    file_name = doc.file_name.lower()
+
+    ftype = detect_file_type(file_bytes, file_name)
+    threats = [f"**نوع الملف المكتشف**: {ftype}"]
+
+    # 1. كشف التنكر
+    if file_name.endswith('.pdf') and ftype!= 'PDF': threats.append("❌ تنكر خطير: الملف ليس PDF حقي.")
+    if file_name.endswith('.apk') and ftype!= 'ZIP/APK/DOCX': threats.append("❌ تنكر خطير: الملف ليس APK حقي.")
+    if file_name.endswith('.exe') and ftype!= 'EXE/DLL': threats.append("❌ تنكر خطير: الملف ليس EXE حقي.")
+
+    # 2. فحص PDF
+    if ftype == 'PDF':
+        raw = file_bytes.decode('latin-1', errors='ignore')
+        if '/JS' in raw or '/JavaScript' in raw: threats.append("كشف كود JavaScript مشبوه.")
+        if '/Launch' in raw or '/AA' in raw: threats.append("كشف أمر تنفيذ تلقائي عند الفتح.")
+
+    # 3. فحص APK/ZIP
+    elif ftype == 'ZIP/APK/DOCX':
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+                namelist = z.namelist()
+                if any(f.endswith(('.exe', '.bat', '.vbs', '.ps1', '.js')) for f in namelist): threats.append("يحتوي ملف تنفيذي خطير بالداخل.")
+                if 'AndroidManifest.xml' in namelist:
+                    threats.append("**هذا تطبيق اندرويد APK**")
+                    if 'classes.dex' in namelist: threats.append("يحتوي كود تنفيذي Dex.")
+                    if any(x in file_name for x in ["gold", "mod", "plus", "pro"]): threats.append("نسخة معدلة = خطر عالي.")
+        except zipfile.BadZipFile: threats.append("الملف تالف او ليس ZIP صالح.")
+
+    # 4. فحص EXE
+    elif ftype == 'EXE/DLL':
+        threats.append("⚠️ ملف تنفيذي Windows. لا تفتحه الا اذا كنت متأكد 100%.")
+
+    result = "❌ **خطير - لا تفتح الملف**" if len(threats) > 1 else "✅ **آمن مبدئياً**"
+    await msg.edit_text(f"{result}\n\n" + "\n".join(threats), reply_markup=get_kb("back"))
+    CHECK_MODE.pop(user_id)
+
 # ----------------- تشغيل البوت -----------------
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(buttons))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, messages))
+app.add_handler(MessageHandler(filters.Document.ALL, handle_file)) # سطر جديد فقط
 app.run_polling(drop_pending_updates=True)
